@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# LogVar 弹幕 API · Docker Compose 一键部署脚本
+# LogVar 弹幕 API · Docker Compose 一键部署脚本（compose 版）
 #
 # 用法：
 #   安装/更新：bash install_compose.sh
@@ -154,6 +154,17 @@ open_firewall_port() {
       firewall-cmd --reload || true
     fi
   fi
+}
+
+#################### IP 检测 ####################
+
+detect_ip() {
+  local ip
+  # 先尝试公网 IP，再退回本机 IP
+  ip=$(curl -s --max-time 2 https://ipinfo.io/ip 2>/dev/null \
+      || curl -s --max-time 2 https://api.ip.sb/ip 2>/dev/null \
+      || hostname -I 2>/dev/null | awk '{print $1}')
+  echo "${ip:-你的服务器IP}"
 }
 
 #################### 配置生成 ####################
@@ -313,9 +324,10 @@ check_status() {
 #################### README 生成 ####################
 
 generate_readme() {
-  local token admin_token
+  local token admin_token server_ip
   token=$(grep '^TOKEN=' "${DANMU_ENV_FILE}" | cut -d'=' -f2)
   admin_token=$(grep '^ADMIN_TOKEN=' "${DANMU_ENV_FILE}" | cut -d'=' -f2)
+  server_ip=$(detect_ip)
 
   cat > "${README_FILE}" <<EOF
 LogVar 弹幕 API · Docker Compose 部署说明
@@ -335,10 +347,12 @@ LogVar 弹幕 API · Docker Compose 部署说明
 ----------------
 
 - 管理后台（使用 ADMIN_TOKEN）：
-  http://你的服务器IP:${PORT}/${admin_token}
+  http://${server_ip}:${PORT}/${admin_token}
 
-- 普通 API 示例（使用 TOKEN）：
-  http://你的服务器IP:${PORT}/${token}?url=视频地址
+- 普通 API 基本路径（使用 TOKEN）：
+  http://${server_ip}:${PORT}/${token}
+
+  如需传入视频地址，请在上面基础上加上 ?url=<视频地址>
 
 三、目录说明
 ------------
@@ -353,29 +367,23 @@ LogVar 弹幕 API · Docker Compose 部署说明
 四、常用命令
 ------------
 
-# 查看容器状态
-docker ps
-
 # 进入 docker-compose 目录
 cd ${COMPOSE_DIR}
 
-# 启动/更新服务
+# 查看容器状态
+$(compose_cmd) ps
+
+# 更新镜像并重启服务
 $(compose_cmd) pull
 $(compose_cmd) up -d
 
 # 停止服务
 $(compose_cmd) down
 
-五、重新安装 / 卸载
---------------------
+# 卸载（会删除容器与配置）
+bash /root/install_compose.sh uninstall
 
-# 重新安装（会停止旧容器并删除配置后重装）
-bash install_compose.sh
-
-# 仅卸载（停止容器 + 删除所有配置）
-bash install_compose.sh uninstall
-
-六、远程一键安装
+五、远程一键安装
 ----------------
 
 可以在其他服务器使用下面命令一键安装（如你修改了仓库地址请同步更新）：
@@ -414,9 +422,10 @@ main_install() {
   start_compose
   generate_readme
 
-  local token admin_token
+  local token admin_token server_ip
   token=$(grep '^TOKEN=' "${DANMU_ENV_FILE}" | cut -d'=' -f2)
   admin_token=$(grep '^ADMIN_TOKEN=' "${DANMU_ENV_FILE}" | cut -d'=' -f2)
+  server_ip=$(detect_ip)
 
   success "安装完成！"
   echo
@@ -425,11 +434,19 @@ main_install() {
   echo "compose 目录：${COMPOSE_DIR}"
   echo "访问端口：${PORT}"
   echo
-  echo "管理后台示例地址（请把 你的服务器IP 换成真实 IP）："
-  echo "  http://你的服务器IP:${PORT}/${admin_token}"
+  echo "管理后台示例地址："
+  echo "  http://${server_ip}:${PORT}/${admin_token}"
   echo
-  echo "普通 API 示例："
-  echo "  http://你的服务器IP:${PORT}/${token}?url=视频地址"
+  echo "普通 API 基本路径："
+  echo "  http://${server_ip}:${PORT}/${token}"
+  echo
+  echo "如果需要传入视频地址，可在上面基础上追加 ?url=<视频地址>"
+  echo
+  echo "常用命令："
+  echo "  查看状态：  cd ${COMPOSE_DIR} && $(compose_cmd) ps"
+  echo "  更新重启：  cd ${COMPOSE_DIR} && $(compose_cmd) pull && $(compose_cmd) up -d"
+  echo "  停止服务：  cd ${COMPOSE_DIR} && $(compose_cmd) down"
+  echo "  卸载脚本：  bash install_compose.sh uninstall"
   echo
   echo "详细说明请查看：${README_FILE}"
   echo "============================================="
