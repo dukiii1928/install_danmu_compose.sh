@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# danmu-api · Docker Compose 一键部署脚本
+# danmu-api · Docker Compose 一键部署脚本 2.0
 # 用法：
 #   安装/更新：bash install_compose.sh
 #   卸载：    bash install_compose.sh uninstall
@@ -10,6 +10,9 @@
 #   - 生成 / 复用 /root/danmu-config/.env 配置文件
 #   - 使用 /root/danmu-compose/docker-compose.yml 启动 danmu-api
 #   - 若已存在旧容器，会先停止并删除再重装
+#   - 支持自定义镜像 TAG
+#   - 支持可选 watchtower 自动更新
+#   - 支持可选自动放行防火墙端口（ufw/firewalld）
 
 set -e
 
@@ -21,7 +24,7 @@ DANMU_ENV_FILE="${DANMU_ENV_DIR}/.env"
 COMPOSE_DIR="/root/danmu-compose"
 COMPOSE_FILE="${COMPOSE_DIR}/docker-compose.yml"
 
-IMAGE_NAME="logvar/danmu-api:latest"
+IMAGE_REPO="logvar/danmu-api"
 
 #################### 日志函数 ####################
 
@@ -108,7 +111,7 @@ random_string() {
 create_or_update_env() {
   mkdir -p "${DANMU_ENV_DIR}"
 
-  local PORT TOKEN ADMIN_TOKEN BILIBILI_COOKIE
+  local PORT TOKEN ADMIN_TOKEN BILIBILI_COOKIE IMAGE_TAG ENABLE_WATCHTOWER AUTO_OPEN_FIREWALL
 
   if [ -f "${DANMU_ENV_FILE}" ]; then
     info "检测到已有配置文件：${DANMU_ENV_FILE}"
@@ -117,8 +120,12 @@ create_or_update_env() {
     PORT="${PORT:-8080}"
     TOKEN="${TOKEN:-$(random_string)}"
     ADMIN_TOKEN="${ADMIN_TOKEN:-admin_$(random_string)}"
+    IMAGE_TAG="${IMAGE_TAG:-latest}"
+    ENABLE_WATCHTOWER="${ENABLE_WATCHTOWER:-false}"
+    AUTO_OPEN_FIREWALL="${AUTO_OPEN_FIREWALL:-false}"
 
     warn "将复用已有配置，如需修改请按提示输入（直接回车表示保留当前值）。"
+
     read -rp "对外访问端口 [当前: ${PORT}]: " input_port
     PORT="${input_port:-$PORT}"
 
@@ -127,6 +134,23 @@ create_or_update_env() {
 
     read -rp "ADMIN_TOKEN [当前: ${ADMIN_TOKEN}]: " input_admin
     ADMIN_TOKEN="${input_admin:-$ADMIN_TOKEN}"
+
+    read -rp "镜像 TAG [当前: ${IMAGE_TAG}，例如 latest 或具体版本号]: " input_tag
+    IMAGE_TAG="${input_tag:-$IMAGE_TAG}"
+
+    read -rp "是否启用 watchtower 自动更新? (y/N) [当前: ${ENABLE_WATCHTOWER}] " input_wt
+    case "${input_wt}" in
+      y|Y) ENABLE_WATCHTOWER="true" ;;
+      n|N|"") ;;
+      *) ;;
+    esac
+
+    read -rp "是否尝试自动放行防火墙端口 ${PORT}? (y/N) [当前: ${AUTO_OPEN_FIREWALL}] " input_fw
+    case "${input_fw}" in
+      y|Y) AUTO_OPEN_FIREWALL="true" ;;
+      n|N|"") ;;
+      *) ;;
+    esac
 
     read -rp "BILIBILI_COOKIE（留空表示不改）: " input_cookie
     if [ -n "${input_cookie}" ]; then
@@ -147,6 +171,21 @@ create_or_update_env() {
 
     read -rp "请输入 ADMIN_TOKEN（管理专用）[默认随机: ${rand_admin}]: " input_admin
     ADMIN_TOKEN="${input_admin:-$rand_admin}"
+
+    read -rp "镜像 TAG [默认 latest，例如 latest 或具体版本号]: " input_tag
+    IMAGE_TAG="${input_tag:-latest}"
+
+    read -rp "是否启用 watchtower 自动更新? (y/N): " input_wt
+    case "${input_wt}" in
+      y|Y) ENABLE_WATCHTOWER="true" ;;
+      *)   ENABLE_WATCHTOWER="false" ;;
+    esac
+
+    read -rp "是否尝试自动放行防火墙端口 ${PORT}? (y/N): " input_fw
+    case "${input_fw}" in
+      y|Y) AUTO_OPEN_FIREWALL="true" ;;
+      *)   AUTO_OPEN_FIREWALL="false" ;;
+    esac
 
     read -rp "请输入 BILIBILI_COOKIE（可留空）: " BILIBILI_COOKIE
   fi
@@ -180,12 +219,21 @@ YOUKU_CONCURRENCY=${YOUKU_CONCURRENCY:-4}
 
 # B 站 Cookie（可选）
 BILIBILI_COOKIE=${BILIBILI_COOKIE}
+
+# 镜像 TAG，如 latest 或具体版本号
+IMAGE_TAG=${IMAGE_TAG}
+
+# 是否启用 watchtower 自动更新（true/false）
+ENABLE_WATCHTOWER=${ENABLE_WATCHTOWER}
+
+# 是否自动放行防火墙端口（true/false）
+AUTO_OPEN_FIREWALL=${AUTO_OPEN_FIREWALL}
 EOF
 
   success "配置文件已写入：${DANMU_ENV_FILE}"
 
-  # 将 PORT 等导出到当前 shell，后面生成 compose / 说明要用
-  export PORT TOKEN ADMIN_TOKEN BILIBILI_COOKIE
+  # 导出到当前 shell
+  export PORT TOKEN ADMIN_TOKEN BILIBILI_COOKIE IMAGE_TAG ENABLE_WATCHTOWER AUTO_OPEN_FIREWALL
 }
 
 #################### 生成 docker-compose.yml ####################
@@ -193,12 +241,11 @@ EOF
 create_compose_file() {
   mkdir -p "${COMPOSE_DIR}"
 
+  # 不再写 version 字段，避免 v2 的 obsolete 警告
   cat > "${COMPOSE_FILE}" <<EOF
-version: "3.8"
-
 services:
   danmu-api:
-    image: ${IMAGE_NAME}
+    image: ${IMAGE_REPO}:${IMAGE_TAG:-latest}
     container_name: danmu-api
     restart: unless-stopped
 
@@ -215,11 +262,64 @@ EOF
   success "docker-compose 配置已写入：${COMPOSE_FILE}"
 }
 
+#################### 防火墙放行 ####################
+
+open_firewall_port() {
+  if [ "${AUTO_OPEN_FIREWALL}" != "true" ]; then
+    return 0
+  fi
+
+  local port="${PORT:-8080}"
+
+  if command -v ufw >/dev/null 2>&1; then
+    if ufw status 2>/dev/null | grep -q "Status: active"; then
+      info "检测到 ufw，尝试放行端口 ${port}/tcp ..."
+      ufw allow "${port}/tcp" >/dev/null 2>&1 || warn "ufw 放行端口失败，请手动检查。"
+    fi
+  elif command -v firewall-cmd >/dev/null 2>&1; then
+    info "检测到 firewalld，尝试放行端口 ${port}/tcp ..."
+    firewall-cmd --add-port="${port}/tcp" --permanent >/dev/null 2>&1 || warn "firewalld 放行端口失败。"
+    firewall-cmd --reload >/dev/null 2>&1 || true
+  else
+    warn "未检测到 ufw 或 firewalld，跳过自动放行防火墙端口，请按需手动配置。"
+  fi
+}
+
+#################### watchtower 自动更新 ####################
+
+setup_watchtower() {
+  if [ "${ENABLE_WATCHTOWER}" != "true" ]; then
+    info "未启用 watchtower 自动更新。"
+    return 0
+  fi
+
+  info "配置 watchtower 自动更新 danmu-api 容器..."
+
+  # 先删除同名容器
+  if docker ps -a --format '{{.Names}}' | grep -wq "watchtower-danmu-api"; then
+    docker stop watchtower-danmu-api >/dev/null 2>&1 || true
+    docker rm watchtower-danmu-api >/dev/null 2>&1 || true
+  fi
+
+  docker run -d \
+    --name watchtower-danmu-api \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    --restart always \
+    -e TZ=Asia/Shanghai \
+    -e WATCHTOWER_SCHEDULE="0 0 4 * * *" \
+    containrrr/watchtower \
+    danmu-api >/dev/null 2>&1 || warn "watchtower 启动失败，请手动检查。"
+
+  success "watchtower 已配置（每日凌晨 4 点检查 danmu-api 更新）。"
+}
+
 #################### 启动服务 ####################
 
 start_service() {
-  info "拉取最新镜像：${IMAGE_NAME}"
-  docker pull "${IMAGE_NAME}" || true
+  local full_image="${IMAGE_REPO}:${IMAGE_TAG:-latest}"
+
+  info "拉取镜像：${full_image}"
+  docker pull "${full_image}" || warn "镜像拉取失败，将尝试使用本地缓存镜像（如果有）。"
 
   info "使用 docker compose 启动 danmu-api..."
   docker compose -f "${COMPOSE_FILE}" up -d
@@ -293,14 +393,22 @@ generate_readme() {
    docker compose up -d
 
 
-四、卸载（完全删除容器及配置）
+四、关于自动更新与防火墙
 
-   bash $0 uninstall
+- 镜像仓库：${IMAGE_REPO}
+- 镜像 TAG：${IMAGE_TAG}
 
-   此操作会删除：
-   - 容器 danmu-api
-   - 目录 ${COMPOSE_DIR}
-   - 目录 ${DANMU_ENV_DIR}
+- watchtower 自动更新：${ENABLE_WATCHTOWER}
+  若为 true，则每日凌晨 4 点检查 danmu-api 是否有新镜像。
+
+- 自动放行防火墙端口：${AUTO_OPEN_FIREWALL}
+
+
+五、卸载（完全删除容器及配置）
+
+   bash install_compose.sh uninstall
+
+   或在你使用的 curl 命令后面加上 "uninstall" 参数。
 
 =====================================================================
 EOF
@@ -361,7 +469,9 @@ main() {
       cleanup_old
       create_or_update_env
       create_compose_file
+      open_firewall_port
       start_service
+      setup_watchtower
       generate_readme
 
       echo
