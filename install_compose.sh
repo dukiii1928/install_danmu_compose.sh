@@ -33,7 +33,7 @@ README_FILE="/root/README_danmu-api_compose.txt"
 IMAGE_REPO="logvar/danmu-api"
 
 # 这里写你 GitHub 上脚本的 raw 地址，方便 README 里展示
-SCRIPT_URL="https://raw.githubusercontent.com/dukiii1928/install_danmu_compose.sh/main/install_compose.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/dukiii1928/install_danmu_compose.sh/refs/heads/main/install_compose.sh"
 
 #################### 日志函数 ####################
 
@@ -127,7 +127,7 @@ compose_cmd() {
 
 ask_port() {
   local default_port=8080
-  read -rp "请输入对外访问端口 [默认 ${default_port}]：" PORT
+  read -rp "请输入对外访问端口 [默认 ${default_port}]: " PORT
   PORT=${PORT:-$default_port}
 
   if ! [[ $PORT =~ ^[0-9]+$ ]] || [ "$PORT" -le 0 ] || [ "$PORT" -gt 65535 ]; then
@@ -170,23 +170,23 @@ create_env_fresh() {
   default_token=$(random_string)
   default_admin_token=$(random_string)
 
-  read -rp "请输入 API TOKEN（留空随机生成）：" TOKEN
+  read -rp "请输入 API TOKEN（留空随机生成）: " TOKEN
   TOKEN=${TOKEN:-$default_token}
 
-  read -rp "请输入管理后台 ADMIN_TOKEN（留空随机生成）：" ADMIN_TOKEN
+  read -rp "请输入管理后台 ADMIN_TOKEN（留空随机生成）: " ADMIN_TOKEN
   ADMIN_TOKEN=${ADMIN_TOKEN:-$default_admin_token}
 
-  read -rp "请输入镜像 TAG（默认 latest）：" IMAGE_TAG
+  read -rp "请输入镜像 TAG（默认 latest）: " IMAGE_TAG
   IMAGE_TAG=${IMAGE_TAG:-latest}
 
-  read -rp "是否启用 watchtower 自动更新？[y/N]：" enable_watchtower
+  read -rp "是否启用 watchtower 自动更新？[y/N]: " enable_watchtower
   if [[ "$enable_watchtower" =~ ^[Yy]$ ]]; then
     ENABLE_WATCHTOWER="true"
   else
     ENABLE_WATCHTOWER="false"
   fi
 
-  read -rp "是否现在设置 B 站 Cookie（BILIBILI_COOKIE）？[y/N]：" set_bili
+  read -rp "是否现在设置 B 站 Cookie（BILIBILI_COOKIE）？[y/N]: " set_bili
   if [[ "$set_bili" =~ ^[Yy]$ ]]; then
     echo "请粘贴你的 B 站 Cookie（整串或关键字段，注意不要在公共场合泄露）："
     read -r BILIBILI_COOKIE
@@ -284,7 +284,7 @@ uninstall_all() {
   warn "  - 删除 ${COMPOSE_DIR}"
   warn "  - 删除 ${DANMU_ENV_DIR}（包含 .env 与网页配置）"
   warn "  - 删除 ${README_FILE}"
-  read -rp "确认卸载？[y/N]：" confirm
+  read -rp "确认卸载？[y/N]: " confirm
   if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
     info "已取消卸载。"
     return
@@ -400,7 +400,7 @@ main_install() {
     warn "检测到旧的 danmu-api 部署目录："
     [ -d "$DANMU_ENV_DIR" ] && warn "  - ${DANMU_ENV_DIR}"
     [ -d "$COMPOSE_DIR" ] && warn "  - ${COMPOSE_DIR}"
-    read -rp "是否先卸载旧部署再重装？[Y/n]：" ans
+    read -rp "是否先卸载旧部署再重装？[Y/n]: " ans
     ans=${ans:-Y}
     if [[ "$ans" =~ ^[Yy]$ ]]; then
       uninstall_all
