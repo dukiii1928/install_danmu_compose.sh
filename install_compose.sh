@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # danmu-api · Docker Compose 一键部署脚本
 # 用法：
-#   安装/更新：bash install_danmu_compose.sh
-#   卸载：    bash install_danmu_compose.sh uninstall
-#   状态：    bash install_danmu_compose.sh status
+#   安装/更新：bash install_compose.sh
+#   卸载：    bash install_compose.sh uninstall
+#   状态：    bash install_compose.sh status
 #
 # 特点：
 #   - 自动安装 Docker + Docker Compose（仅 Debian/Ubuntu）
@@ -152,7 +152,7 @@ create_or_update_env() {
   fi
 
   cat > "${DANMU_ENV_FILE}" <<EOF
-# danmu-api 配置文件（由 install_danmu_compose.sh 生成/更新）
+# danmu-api 配置文件（由 install_compose.sh 生成/更新）
 
 # 对外访问端口（仅用于生成说明，不直接被程序读取）
 PORT=${PORT}
