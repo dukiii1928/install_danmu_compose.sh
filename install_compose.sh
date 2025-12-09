@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# danmu-api · Docker Compose 一键部署脚本 2.0
+# danmu-api · Docker Compose 一键部署脚本 2.0++
 # 用法：
 #   安装/更新：bash install_compose.sh
 #   卸载：    bash install_compose.sh uninstall
@@ -7,12 +7,13 @@
 #
 # 特点：
 #   - 自动安装 Docker + Docker Compose（仅 Debian/Ubuntu）
-#   - 生成 / 复用 /root/danmu-config/.env 配置文件
-#   - 使用 /root/danmu-compose/docker-compose.yml 启动 danmu-api
-#   - 若已存在旧容器，会先停止并删除再重装
+#   - 安装前如果检测到旧部署，会先完整卸载（容器 + 配置）再重装
+#   - 生成 /root/danmu-config/.env 配置文件
+#   - 生成 /root/danmu-compose/docker-compose.yml 并通过 docker compose 启动
 #   - 支持自定义镜像 TAG
 #   - 支持可选 watchtower 自动更新
 #   - 支持可选自动放行防火墙端口（ufw/firewalld）
+#   - 安装结束自动打印访问地址与常用命令
 
 set -e
 
@@ -25,6 +26,9 @@ COMPOSE_DIR="/root/danmu-compose"
 COMPOSE_FILE="${COMPOSE_DIR}/docker-compose.yml"
 
 IMAGE_REPO="logvar/danmu-api"
+
+# 这里写死你的远程脚本地址，方便在结尾打印命令给你复制
+SCRIPT_URL="https://raw.githubusercontent.com/dukiii1928/install_danmu_compose.sh/main/install_compose.sh"
 
 #################### 日志函数 ####################
 
@@ -78,27 +82,46 @@ install_docker_and_compose() {
   fi
 }
 
-#################### 清理旧安装 ####################
+#################### 检测是否已有安装 ####################
 
-cleanup_old() {
-  info "检查并清理旧的 danmu-api 部署..."
-
-  # 若存在 compose 文件，先尝试 down
+has_previous_install() {
   if [ -f "${COMPOSE_FILE}" ]; then
-    info "检测到旧的 docker-compose.yml，执行 docker compose down..."
+    return 0
+  fi
+  if docker ps -a --format '{{.Names}}' | grep -wq "danmu-api"; then
+    return 0
+  fi
+  if docker ps -a --format '{{.Names}}' | grep -wq "watchtower-danmu-api"; then
+    return 0
+  fi
+  return 1
+}
+
+#################### 卸载逻辑（可复用） ####################
+
+_do_uninstall() {
+  info "开始卸载 danmu-api（容器 + 配置）..."
+
+  if [ -f "${COMPOSE_FILE}" ]; then
     docker compose -f "${COMPOSE_FILE}" down --remove-orphans >/dev/null 2>&1 || true
   fi
 
-  # 单独清理同名容器（防止有手动启动的）
   for name in danmu-api watchtower-danmu-api; do
     if docker ps -a --format '{{.Names}}' | grep -wq "${name}"; then
-      info "停止并删除容器 ${name}..."
       docker stop "${name}" >/dev/null 2>&1 || true
       docker rm "${name}" >/dev/null 2>&1 || true
     fi
   done
 
-  success "旧部署清理完成（配置文件 /root/danmu-config/.env 会保留）。"
+  rm -rf "${COMPOSE_DIR}" "${DANMU_ENV_DIR}"
+
+  success "卸载完成，相关容器与配置文件已全部删除。"
+}
+
+uninstall_all() {
+  require_root
+  _do_uninstall
+  exit 0
 }
 
 #################### 配置文件处理 ####################
@@ -108,87 +131,42 @@ random_string() {
   tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 24
 }
 
-create_or_update_env() {
+create_env_fresh() {
   mkdir -p "${DANMU_ENV_DIR}"
 
   local PORT TOKEN ADMIN_TOKEN BILIBILI_COOKIE IMAGE_TAG ENABLE_WATCHTOWER AUTO_OPEN_FIREWALL
 
-  if [ -f "${DANMU_ENV_FILE}" ]; then
-    info "检测到已有配置文件：${DANMU_ENV_FILE}"
-    # shellcheck disable=SC1090
-    source "${DANMU_ENV_FILE}" || true
-    PORT="${PORT:-8080}"
-    TOKEN="${TOKEN:-$(random_string)}"
-    ADMIN_TOKEN="${ADMIN_TOKEN:-admin_$(random_string)}"
-    IMAGE_TAG="${IMAGE_TAG:-latest}"
-    ENABLE_WATCHTOWER="${ENABLE_WATCHTOWER:-false}"
-    AUTO_OPEN_FIREWALL="${AUTO_OPEN_FIREWALL:-false}"
+  info "未检测到配置文件，将为你创建新的配置。"
 
-    warn "将复用已有配置，如需修改请按提示输入（直接回车表示保留当前值）。"
+  read -rp "请输入对外访问端口 [默认 8080]: " input_port
+  PORT="${input_port:-8080}"
 
-    read -rp "对外访问端口 [当前: ${PORT}]: " input_port
-    PORT="${input_port:-$PORT}"
+  local rand_token rand_admin
+  rand_token="$(random_string)"
+  rand_admin="admin_$(random_string)"
 
-    read -rp "TOKEN [当前: ${TOKEN}]: " input_token
-    TOKEN="${input_token:-$TOKEN}"
+  read -rp "请输入 TOKEN [默认随机: ${rand_token}]: " input_token
+  TOKEN="${input_token:-$rand_token}"
 
-    read -rp "ADMIN_TOKEN [当前: ${ADMIN_TOKEN}]: " input_admin
-    ADMIN_TOKEN="${input_admin:-$ADMIN_TOKEN}"
+  read -rp "请输入 ADMIN_TOKEN（管理专用）[默认随机: ${rand_admin}]: " input_admin
+  ADMIN_TOKEN="${input_admin:-$rand_admin}"
 
-    read -rp "镜像 TAG [当前: ${IMAGE_TAG}，例如 latest 或具体版本号]: " input_tag
-    IMAGE_TAG="${input_tag:-$IMAGE_TAG}"
+  read -rp "镜像 TAG [默认 latest，例如 latest 或具体版本号]: " input_tag
+  IMAGE_TAG="${input_tag:-latest}"
 
-    read -rp "是否启用 watchtower 自动更新? (y/N) [当前: ${ENABLE_WATCHTOWER}] " input_wt
-    case "${input_wt}" in
-      y|Y) ENABLE_WATCHTOWER="true" ;;
-      n|N|"") ;;
-      *) ;;
-    esac
+  read -rp "是否启用 watchtower 自动更新? (y/N): " input_wt
+  case "${input_wt}" in
+    y|Y) ENABLE_WATCHTOWER="true" ;;
+    *)   ENABLE_WATCHTOWER="false" ;;
+  esac
 
-    read -rp "是否尝试自动放行防火墙端口 ${PORT}? (y/N) [当前: ${AUTO_OPEN_FIREWALL}] " input_fw
-    case "${input_fw}" in
-      y|Y) AUTO_OPEN_FIREWALL="true" ;;
-      n|N|"") ;;
-      *) ;;
-    esac
+  read -rp "是否尝试自动放行防火墙端口 ${PORT}? (y/N): " input_fw
+  case "${input_fw}" in
+    y|Y) AUTO_OPEN_FIREWALL="true" ;;
+    *)   AUTO_OPEN_FIREWALL="false" ;;
+  esac
 
-    read -rp "BILIBILI_COOKIE（留空表示不改）: " input_cookie
-    if [ -n "${input_cookie}" ]; then
-      BILIBILI_COOKIE="${input_cookie}"
-    fi
-  else
-    info "未检测到配置文件，将为你创建新的配置。"
-
-    read -rp "请输入对外访问端口 [默认 8080]: " input_port
-    PORT="${input_port:-8080}"
-
-    local rand_token rand_admin
-    rand_token="$(random_string)"
-    rand_admin="admin_$(random_string)"
-
-    read -rp "请输入 TOKEN [默认随机: ${rand_token}]: " input_token
-    TOKEN="${input_token:-$rand_token}"
-
-    read -rp "请输入 ADMIN_TOKEN（管理专用）[默认随机: ${rand_admin}]: " input_admin
-    ADMIN_TOKEN="${input_admin:-$rand_admin}"
-
-    read -rp "镜像 TAG [默认 latest，例如 latest 或具体版本号]: " input_tag
-    IMAGE_TAG="${input_tag:-latest}"
-
-    read -rp "是否启用 watchtower 自动更新? (y/N): " input_wt
-    case "${input_wt}" in
-      y|Y) ENABLE_WATCHTOWER="true" ;;
-      *)   ENABLE_WATCHTOWER="false" ;;
-    esac
-
-    read -rp "是否尝试自动放行防火墙端口 ${PORT}? (y/N): " input_fw
-    case "${input_fw}" in
-      y|Y) AUTO_OPEN_FIREWALL="true" ;;
-      *)   AUTO_OPEN_FIREWALL="false" ;;
-    esac
-
-    read -rp "请输入 BILIBILI_COOKIE（可留空）: " BILIBILI_COOKIE
-  fi
+  read -rp "请输入 BILIBILI_COOKIE（可留空）: " BILIBILI_COOKIE
 
   cat > "${DANMU_ENV_FILE}" <<EOF
 # danmu-api 配置文件（由 install_compose.sh 生成/更新）
@@ -203,19 +181,19 @@ TOKEN=${TOKEN}
 ADMIN_TOKEN=${ADMIN_TOKEN}
 
 # 弹幕颜色处理：default / white / color
-CONVERT_COLOR=${CONVERT_COLOR:-default}
+CONVERT_COLOR=default
 
 # 源优先级
-SOURCE_ORDER=${SOURCE_ORDER:-default}
+SOURCE_ORDER=default
 
 # 其他弹幕服务器
-OTHER_SERVER=${OTHER_SERVER}
+OTHER_SERVER=
 
 # VOD 服务器相关
-VOD_SERVERS=${VOD_SERVERS}
-VOD_RETURN_MODE=${VOD_RETURN_MODE:-merge}
-VOD_REQUEST_TIMEOUT=${VOD_REQUEST_TIMEOUT:-8000}
-YOUKU_CONCURRENCY=${YOUKU_CONCURRENCY:-4}
+VOD_SERVERS=
+VOD_RETURN_MODE=merge
+VOD_REQUEST_TIMEOUT=8000
+YOUKU_CONCURRENCY=4
 
 # B 站 Cookie（可选）
 BILIBILI_COOKIE=${BILIBILI_COOKIE}
@@ -232,7 +210,6 @@ EOF
 
   success "配置文件已写入：${DANMU_ENV_FILE}"
 
-  # 导出到当前 shell
   export PORT TOKEN ADMIN_TOKEN BILIBILI_COOKIE IMAGE_TAG ENABLE_WATCHTOWER AUTO_OPEN_FIREWALL
 }
 
@@ -241,7 +218,6 @@ EOF
 create_compose_file() {
   mkdir -p "${COMPOSE_DIR}"
 
-  # 不再写 version 字段，避免 v2 的 obsolete 警告
   cat > "${COMPOSE_FILE}" <<EOF
 services:
   danmu-api:
@@ -295,7 +271,6 @@ setup_watchtower() {
 
   info "配置 watchtower 自动更新 danmu-api 容器..."
 
-  # 先删除同名容器
   if docker ps -a --format '{{.Names}}' | grep -wq "watchtower-danmu-api"; then
     docker stop watchtower-danmu-api >/dev/null 2>&1 || true
     docker rm watchtower-danmu-api >/dev/null 2>&1 || true
@@ -416,28 +391,30 @@ EOF
   success "使用说明已生成：${README_FILE}"
 }
 
-#################### 卸载与状态 ####################
+#################### 安装完成后在终端打印摘要 ####################
 
-uninstall_all() {
-  require_root
-  info "开始卸载 danmu-api（容器 + 配置）..."
+print_final_hint() {
+  # shellcheck disable=SC1090
+  source "${DANMU_ENV_FILE}" || true
+  local SERVER_IP
+  SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+  [ -z "${SERVER_IP}" ] && SERVER_IP="你的服务器IP"
 
-  if [ -f "${COMPOSE_FILE}" ]; then
-    docker compose -f "${COMPOSE_FILE}" down --remove-orphans >/dev/null 2>&1 || true
-  fi
-
-  for name in danmu-api watchtower-danmu-api; do
-    if docker ps -a --format '{{.Names}}' | grep -wq "${name}"; then
-      docker stop "${name}" >/dev/null 2>&1 || true
-      docker rm "${name}" >/dev/null 2>&1 || true
-    fi
-  done
-
-  rm -rf "${COMPOSE_DIR}" "${DANMU_ENV_DIR}"
-
-  success "卸载完成，相关容器与配置文件已全部删除。"
-  exit 0
+  echo
+  echo "==================== 安装完成 · 信息摘要 ===================="
+  echo "普通访问:  http://${SERVER_IP}:${PORT}/${TOKEN}"
+  echo "管理后台:  http://${SERVER_IP}:${PORT}/${ADMIN_TOKEN}"
+  echo
+  echo "配置说明文件: /root/README_danmu-api_compose.txt"
+  echo
+  echo "常用命令："
+  echo "  更新/重装：bash <(curl -fsSL ${SCRIPT_URL})"
+  echo "  卸载：    bash <(curl -fsSL ${SCRIPT_URL}) uninstall"
+  echo "  状态：    bash <(curl -fsSL ${SCRIPT_URL}) status"
+  echo "==========================================================="
 }
+
+#################### 状态查看 ####################
 
 show_status() {
   require_root
@@ -466,13 +443,21 @@ main() {
     *)
       require_root
       install_docker_and_compose
-      cleanup_old
-      create_or_update_env
+
+      # 安装前检查是否已有安装，有的话先完整卸载
+      if has_previous_install; then
+        warn "检测到已有 danmu-api 部署，将先卸载旧版本后再安装。"
+        _do_uninstall
+      fi
+
+      # 全新创建配置
+      create_env_fresh
       create_compose_file
       open_firewall_port
       start_service
       setup_watchtower
       generate_readme
+      print_final_hint
 
       echo
       success "全部完成！你可以查看 /root/README_danmu-api_compose.txt 获取详细使用说明。"
