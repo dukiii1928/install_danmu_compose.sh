@@ -1,27 +1,26 @@
 #!/usr/bin/env bash
-# danmu-api · Docker Compose 一键部署脚本 2.0++
+# LogVar 弹幕 API · Docker Compose 一键部署脚本
+#
 # 用法：
 #   安装/更新：bash install_compose.sh
 #   卸载：    bash install_compose.sh uninstall
 #   状态：    bash install_compose.sh status
 #
 # 特点：
-#   - 自动安装 Docker + Docker Compose（仅 Debian/Ubuntu）
-#   - 安装前如果检测到旧部署，会先完整卸载（容器 + 配置）再重装
-#   - 生成 /root/danmu-config/.env 配置文件（容器内挂载为 /app/config/.env，兼容 1.9.2+）
-#   - 生成 /root/danmu-compose/docker-compose.yml 并通过 docker compose 启动
-#   - 支持自定义镜像 TAG
-#   - 支持可选 watchtower 自动更新
-#   - 支持可选自动放行防火墙端口（ufw/firewalld）
-#   - 安装结束自动打印访问地址与常用命令
+#   - 自动安装 Docker + Docker Compose（Debian/Ubuntu）
+#   - 生成 /root/danmu-config/.env（容器挂载到 /app/config/.env，兼容 v1.9.2+）
+#   - 生成 /root/danmu-compose/docker-compose.yml 并启动
+#   - 可选开启 watchtower 自动更新
+#   - 可选安装时填写 BILIBILI_COOKIE
+#   - 自动生成 /root/README_danmu-api_compose.txt 使用说明
 #
 # 注意：
-#   - 本脚本不会把 TOKEN 等写死在脚本里，适合上传到 GitHub
-#   - 敏感信息都在 /root/danmu-config/.env，请勿提交到公开仓库
+#   - 本脚本不包含任何真实 TOKEN，适合上传 GitHub
+#   - 真正的配置在 /root/danmu-config 目录，请勿提交到公共仓库
 
 set -e
 
-#################### 基本参数 ####################
+#################### 路径与常量 ####################
 
 DANMU_ENV_DIR="/root/danmu-config"
 DANMU_ENV_FILE="${DANMU_ENV_DIR}/.env"
@@ -31,10 +30,9 @@ COMPOSE_FILE="${COMPOSE_DIR}/docker-compose.yml"
 
 README_FILE="/root/README_danmu-api_compose.txt"
 
-# 默认镜像，如果需要可以改成你自己的镜像仓库
 IMAGE_REPO="logvar/danmu-api"
 
-# 这里写死你的远程脚本地址，方便在结尾打印命令给你复制
+# 这里写你 GitHub 上脚本的 raw 地址，方便 README 里展示
 SCRIPT_URL="https://raw.githubusercontent.com/dukiii1928/install_danmu_compose.sh/main/install_compose.sh"
 
 #################### 日志函数 ####################
@@ -51,11 +49,7 @@ require_root() {
   fi
 }
 
-pause() {
-  read -rp "按回车键继续..." _
-}
-
-#################### 环境检测 ####################
+#################### 系统与 Docker ####################
 
 check_os() {
   if [ -f /etc/os-release ]; then
@@ -67,7 +61,7 @@ check_os() {
 
   case "$OS" in
     debian|ubuntu)
-      info "检测到系统为：$PRETTY_NAME"
+      info "检测到系统：$PRETTY_NAME"
       ;;
     *)
       warn "当前系统不是 Debian/Ubuntu，脚本不会自动安装 Docker，请确保已安装 docker 和 docker compose。"
@@ -90,8 +84,8 @@ install_docker_if_needed() {
         chmod a+r /etc/apt/keyrings/docker.gpg
 
         echo \
-          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$ID \
-          $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list >/dev/null
+"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$ID \
+$(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list >/dev/null
 
         apt-get update
         apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
@@ -109,9 +103,8 @@ install_docker_if_needed() {
   if docker compose version >/dev/null 2>&1; then
     info "docker compose 插件已安装。"
   else
-    warn "未检测到 docker compose 插件，请手动安装或使用 'docker-compose' 命令。"
     if command -v docker-compose >/dev/null 2>&1; then
-      info "已检测到 docker-compose 二进制文件，脚本将优先使用 docker-compose。"
+      info "检测到 docker-compose 二进制，将使用 docker-compose。"
     else
       error "未检测到 docker compose，请安装后重试。"
       exit 1
@@ -130,7 +123,7 @@ compose_cmd() {
   fi
 }
 
-#################### 端口、防火墙 ####################
+#################### 端口与防火墙 ####################
 
 ask_port() {
   local default_port=8080
@@ -163,25 +156,24 @@ open_firewall_port() {
   fi
 }
 
-#################### TOKEN / ENV 生成 ####################
+#################### 配置生成 ####################
 
 random_string() {
-  # 生成随机字符串，作为 TOKEN / ADMIN_TOKEN
   tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32
 }
 
 create_env_fresh() {
-  info "开始生成新的环境配置文件：${DANMU_ENV_FILE}"
+  info "生成环境配置文件：${DANMU_ENV_FILE}"
   mkdir -p "$DANMU_ENV_DIR"
 
-  local default_token default_admin_token image_tag enable_watchtower
+  local default_token default_admin_token
   default_token=$(random_string)
   default_admin_token=$(random_string)
 
-  read -rp "请输入 API TOKEN（留空将随机生成）：" TOKEN
+  read -rp "请输入 API TOKEN（留空随机生成）：" TOKEN
   TOKEN=${TOKEN:-$default_token}
 
-  read -rp "请输入管理后台 ADMIN_TOKEN（留空将随机生成）：" ADMIN_TOKEN
+  read -rp "请输入管理后台 ADMIN_TOKEN（留空随机生成）：" ADMIN_TOKEN
   ADMIN_TOKEN=${ADMIN_TOKEN:-$default_admin_token}
 
   read -rp "请输入镜像 TAG（默认 latest）：" IMAGE_TAG
@@ -194,26 +186,34 @@ create_env_fresh() {
     ENABLE_WATCHTOWER="false"
   fi
 
-  # 这里可以根据需要补充更多环境变量初始值
-  # 例如 VOD_SERVERS、SOURCE_ORDER 等，按需自行调整
+  read -rp "是否现在设置 B 站 Cookie（BILIBILI_COOKIE）？[y/N]：" set_bili
+  if [[ "$set_bili" =~ ^[Yy]$ ]]; then
+    echo "请粘贴你的 B 站 Cookie（整串或关键字段，注意不要在公共场合泄露）："
+    read -r BILIBILI_COOKIE
+  else
+    BILIBILI_COOKIE=""
+  fi
 
   cat > "${DANMU_ENV_FILE}" <<EOF
 # danmu-api 环境配置（自动生成）
-# 端口在 docker-compose.yml 中通过映射指定，这里只记录说明
+# 端口仅用于记录，真实映射写在 docker-compose.yml 中
 PORT=${PORT}
 
 # 基本认证
 TOKEN=${TOKEN}
 ADMIN_TOKEN=${ADMIN_TOKEN}
 
-# 镜像版本
+# 镜像版本记录（compose 文件中已写死为同一值）
 IMAGE_TAG=${IMAGE_TAG}
 
 # 是否启用 watchtower 自动更新（true/false）
 ENABLE_WATCHTOWER=${ENABLE_WATCHTOWER}
 
-# 其他可选环境变量请通过网页端「环境变量配置」界面进行管理，
-# 配置会持久化到 /app/config/.env 或 config.yaml 中。
+# B 站 Cookie，如需使用请填写，否则留空。
+BILIBILI_COOKIE=${BILIBILI_COOKIE}
+
+# 其他可选环境变量建议在网页「环境变量配置」中维护，
+# 程序会将配置持久化到 /app/config/.env 或 config.yaml。
 EOF
 
   success "环境配置文件已生成：${DANMU_ENV_FILE}"
@@ -225,31 +225,24 @@ create_compose_file() {
   info "生成 docker-compose.yml：${COMPOSE_FILE}"
   mkdir -p "$COMPOSE_DIR"
 
-  local cc
-  cc=$(compose_cmd)
-
   cat > "${COMPOSE_FILE}" <<EOF
-version: "3.7"
 services:
   danmu-api:
-    image: ${IMAGE_REPO}:\${IMAGE_TAG:-latest}
+    image: ${IMAGE_REPO}:${IMAGE_TAG}
     container_name: danmu-api
     restart: unless-stopped
-
     ports:
-      - "\${PORT:-${PORT}}:9321"
-
+      - "${PORT}:9321"
     environment:
       - TZ=Asia/Shanghai
-
-    # 挂载配置目录到 /app/config（1.9.2+ 从该目录读取 .env/config.yaml）
+    # 挂载配置目录到 /app/config（v1.9.2+ 从该目录读取 .env / config.yaml）
     volumes:
       - "${DANMU_ENV_DIR}:/app/config"
-
 EOF
 
   if [ "${ENABLE_WATCHTOWER}" = "true" ]; then
     cat >> "${COMPOSE_FILE}" <<'EOF'
+
   watchtower:
     image: containrrr/watchtower
     container_name: watchtower
@@ -288,8 +281,8 @@ stop_compose() {
 uninstall_all() {
   warn "即将卸载 danmu-api 及其相关配置："
   warn "  - 停止并移除容器"
-  warn "  - 删除 ${COMPOSE_DIR} 目录"
-  warn "  - 删除 ${DANMU_ENV_DIR} 目录（包含 .env 和网页端配置）"
+  warn "  - 删除 ${COMPOSE_DIR}"
+  warn "  - 删除 ${DANMU_ENV_DIR}（包含 .env 与网页配置）"
   warn "  - 删除 ${README_FILE}"
   read -rp "确认卸载？[y/N]：" confirm
   if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -320,6 +313,10 @@ check_status() {
 #################### README 生成 ####################
 
 generate_readme() {
+  local token admin_token
+  token=$(grep '^TOKEN=' "${DANMU_ENV_FILE}" | cut -d'=' -f2)
+  admin_token=$(grep '^ADMIN_TOKEN=' "${DANMU_ENV_FILE}" | cut -d'=' -f2)
+
   cat > "${README_FILE}" <<EOF
 LogVar 弹幕 API · Docker Compose 部署说明
 =====================================
@@ -331,27 +328,27 @@ LogVar 弹幕 API · Docker Compose 部署说明
 - 配置目录（宿主机）：${DANMU_ENV_DIR}
 - docker-compose 目录：${COMPOSE_DIR}
 - 访问端口：${PORT}
-- TOKEN：$(grep '^TOKEN=' "${DANMU_ENV_FILE}" | cut -d'=' -f2)
-- ADMIN_TOKEN：$(grep '^ADMIN_TOKEN=' "${DANMU_ENV_FILE}" | cut -d'=' -f2)
+- TOKEN：${token}
+- ADMIN_TOKEN：${admin_token}
 
 二、常用访问地址
 ----------------
 
-- 管理后台（需 ADMIN_TOKEN）：
-  http://你的服务器IP:${PORT}/admin?token=$(grep '^ADMIN_TOKEN=' "${DANMU_ENV_FILE}" | cut -d'=' -f2)
+- 管理后台（使用 ADMIN_TOKEN）：
+  http://你的服务器IP:${PORT}/${admin_token}
 
-- API 示例：
-  http://你的服务器IP:${PORT}/?token=$(grep '^TOKEN=' "${DANMU_ENV_FILE}" | cut -d'=' -f2)&url=视频地址
+- 普通 API 示例（使用 TOKEN）：
+  http://你的服务器IP:${PORT}/${token}?url=视频地址
 
 三、目录说明
 ------------
 
 - ${DANMU_ENV_DIR}
-  - .env           # 基础环境变量（由 install_compose.sh 自动生成）
-  - config.yaml    # 如通过网页端「环境变量配置」保存，可能在此生成（由程序维护）
+  - .env         # 基础环境变量（由 install_compose.sh 生成，可被网页配置覆盖）
+  - config.yaml  # 如通过网页端「环境变量配置」保存，程序可能生成该文件
 
 - ${COMPOSE_DIR}
-  - docker-compose.yml  # docker compose 配置文件
+  - docker-compose.yml  # compose 配置文件
 
 四、常用命令
 ------------
@@ -378,10 +375,10 @@ bash install_compose.sh
 # 仅卸载（停止容器 + 删除所有配置）
 bash install_compose.sh uninstall
 
-六、远程脚本地址
+六、远程一键安装
 ----------------
 
-你可以在其他服务器使用下面命令一键安装：
+可以在其他服务器使用下面命令一键安装（如你修改了仓库地址请同步更新）：
 
   bash <(curl -fsSL ${SCRIPT_URL})
 
@@ -417,6 +414,10 @@ main_install() {
   start_compose
   generate_readme
 
+  local token admin_token
+  token=$(grep '^TOKEN=' "${DANMU_ENV_FILE}" | cut -d'=' -f2)
+  admin_token=$(grep '^ADMIN_TOKEN=' "${DANMU_ENV_FILE}" | cut -d'=' -f2)
+
   success "安装完成！"
   echo
   echo "================ 安装结果摘要 ================"
@@ -424,13 +425,13 @@ main_install() {
   echo "compose 目录：${COMPOSE_DIR}"
   echo "访问端口：${PORT}"
   echo
-  echo "管理后台示例地址（请将 你的服务器IP 替换为实际IP）："
-  echo "  http://你的服务器IP:${PORT}/admin?token=$(grep '^ADMIN_TOKEN=' "${DANMU_ENV_FILE}" | cut -d'=' -f2)"
+  echo "管理后台示例地址（请把 你的服务器IP 换成真实 IP）："
+  echo "  http://你的服务器IP:${PORT}/${admin_token}"
   echo
-  echo "API 示例："
-  echo "  http://你的服务器IP:${PORT}/?token=$(grep '^TOKEN=' "${DANMU_ENV_FILE}" | cut -d'=' -f2)&url=视频地址"
+  echo "普通 API 示例："
+  echo "  http://你的服务器IP:${PORT}/${token}?url=视频地址"
   echo
-  echo "详细使用说明请查看：${README_FILE}"
+  echo "详细说明请查看：${README_FILE}"
   echo "============================================="
 }
 
