@@ -1,0 +1,373 @@
+#!/usr/bin/env bash
+# danmu-api · Docker Compose 一键部署脚本
+# 用法：
+#   安装/更新：bash install_danmu_compose.sh
+#   卸载：    bash install_danmu_compose.sh uninstall
+#   状态：    bash install_danmu_compose.sh status
+#
+# 特点：
+#   - 自动安装 Docker + Docker Compose（仅 Debian/Ubuntu）
+#   - 生成 / 复用 /root/danmu-config/.env 配置文件
+#   - 使用 /root/danmu-compose/docker-compose.yml 启动 danmu-api
+#   - 若已存在旧容器，会先停止并删除再重装
+
+set -e
+
+#################### 基本路径配置 ####################
+
+DANMU_ENV_DIR="/root/danmu-config"
+DANMU_ENV_FILE="${DANMU_ENV_DIR}/.env"
+
+COMPOSE_DIR="/root/danmu-compose"
+COMPOSE_FILE="${COMPOSE_DIR}/docker-compose.yml"
+
+IMAGE_NAME="logvar/danmu-api:latest"
+
+#################### 日志函数 ####################
+
+info()    { echo -e "\033[1;34m[信息]\033[0m $*"; }
+warn()    { echo -e "\033[1;33m[警告]\033[0m $*"; }
+success() { echo -e "\033[1;32m[成功]\033[0m $*"; }
+error()   { echo -e "\033[1;31m[错误]\033[0m $*"; }
+
+require_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    error "请使用 root 运行本脚本，例如：sudo bash $0"
+    exit 1
+  fi
+}
+
+#################### 系统检测与依赖安装 ####################
+
+detect_pkg_mgr() {
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "apt-get"
+  else
+    error "当前脚本仅支持 Debian/Ubuntu 系（需要 apt-get），其他系统请手动安装 Docker。"
+    exit 1
+  fi
+}
+
+install_docker_and_compose() {
+  if command -v docker >/dev/null 2>&1; then
+    info "检测到 Docker 已安装，跳过安装。"
+  else
+    info "未检测到 Docker，开始安装..."
+    local pkg_mgr
+    pkg_mgr=$(detect_pkg_mgr)
+
+    ${pkg_mgr} update
+    ${pkg_mgr} install -y docker.io
+    systemctl enable --now docker
+    success "Docker 安装完成。"
+  fi
+
+  if docker compose version >/dev/null 2>&1; then
+    info "检测到 Docker Compose 插件已安装。"
+  else
+    info "未检测到 docker compose 插件，开始安装..."
+    local pkg_mgr
+    pkg_mgr=$(detect_pkg_mgr)
+
+    ${pkg_mgr} update
+    ${pkg_mgr} install -y docker-compose-plugin
+    success "Docker Compose 插件安装完成。"
+  fi
+}
+
+#################### 清理旧安装 ####################
+
+cleanup_old() {
+  info "检查并清理旧的 danmu-api 部署..."
+
+  # 若存在 compose 文件，先尝试 down
+  if [ -f "${COMPOSE_FILE}" ]; then
+    info "检测到旧的 docker-compose.yml，执行 docker compose down..."
+    docker compose -f "${COMPOSE_FILE}" down --remove-orphans >/dev/null 2>&1 || true
+  fi
+
+  # 单独清理同名容器（防止有手动启动的）
+  for name in danmu-api watchtower-danmu-api; do
+    if docker ps -a --format '{{.Names}}' | grep -wq "${name}"; then
+      info "停止并删除容器 ${name}..."
+      docker stop "${name}" >/dev/null 2>&1 || true
+      docker rm "${name}" >/dev/null 2>&1 || true
+    fi
+  done
+
+  success "旧部署清理完成（配置文件 /root/danmu-config/.env 会保留）。"
+}
+
+#################### 配置文件处理 ####################
+
+random_string() {
+  # 生成 24 位随机字符串
+  tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 24
+}
+
+create_or_update_env() {
+  mkdir -p "${DANMU_ENV_DIR}"
+
+  local PORT TOKEN ADMIN_TOKEN BILIBILI_COOKIE
+
+  if [ -f "${DANMU_ENV_FILE}" ]; then
+    info "检测到已有配置文件：${DANMU_ENV_FILE}"
+    # shellcheck disable=SC1090
+    source "${DANMU_ENV_FILE}" || true
+    PORT="${PORT:-8080}"
+    TOKEN="${TOKEN:-$(random_string)}"
+    ADMIN_TOKEN="${ADMIN_TOKEN:-admin_$(random_string)}"
+
+    warn "将复用已有配置，如需修改请按提示输入（直接回车表示保留当前值）。"
+    read -rp "对外访问端口 [当前: ${PORT}]: " input_port
+    PORT="${input_port:-$PORT}"
+
+    read -rp "TOKEN [当前: ${TOKEN}]: " input_token
+    TOKEN="${input_token:-$TOKEN}"
+
+    read -rp "ADMIN_TOKEN [当前: ${ADMIN_TOKEN}]: " input_admin
+    ADMIN_TOKEN="${input_admin:-$ADMIN_TOKEN}"
+
+    read -rp "BILIBILI_COOKIE（留空表示不改）: " input_cookie
+    if [ -n "${input_cookie}" ]; then
+      BILIBILI_COOKIE="${input_cookie}"
+    fi
+  else
+    info "未检测到配置文件，将为你创建新的配置。"
+
+    read -rp "请输入对外访问端口 [默认 8080]: " input_port
+    PORT="${input_port:-8080}"
+
+    local rand_token rand_admin
+    rand_token="$(random_string)"
+    rand_admin="admin_$(random_string)"
+
+    read -rp "请输入 TOKEN [默认随机: ${rand_token}]: " input_token
+    TOKEN="${input_token:-$rand_token}"
+
+    read -rp "请输入 ADMIN_TOKEN（管理专用）[默认随机: ${rand_admin}]: " input_admin
+    ADMIN_TOKEN="${input_admin:-$rand_admin}"
+
+    read -rp "请输入 BILIBILI_COOKIE（可留空）: " BILIBILI_COOKIE
+  fi
+
+  cat > "${DANMU_ENV_FILE}" <<EOF
+# danmu-api 配置文件（由 install_danmu_compose.sh 生成/更新）
+
+# 对外访问端口（仅用于生成说明，不直接被程序读取）
+PORT=${PORT}
+
+# 访问令牌（URL 路径的一部分）
+TOKEN=${TOKEN}
+
+# 管理后台令牌（URL 路径的一部分，务必保密）
+ADMIN_TOKEN=${ADMIN_TOKEN}
+
+# 弹幕颜色处理：default / white / color
+CONVERT_COLOR=${CONVERT_COLOR:-default}
+
+# 源优先级
+SOURCE_ORDER=${SOURCE_ORDER:-default}
+
+# 其他弹幕服务器
+OTHER_SERVER=${OTHER_SERVER}
+
+# VOD 服务器相关
+VOD_SERVERS=${VOD_SERVERS}
+VOD_RETURN_MODE=${VOD_RETURN_MODE:-merge}
+VOD_REQUEST_TIMEOUT=${VOD_REQUEST_TIMEOUT:-8000}
+YOUKU_CONCURRENCY=${YOUKU_CONCURRENCY:-4}
+
+# B 站 Cookie（可选）
+BILIBILI_COOKIE=${BILIBILI_COOKIE}
+EOF
+
+  success "配置文件已写入：${DANMU_ENV_FILE}"
+
+  # 将 PORT 等导出到当前 shell，后面生成 compose / 说明要用
+  export PORT TOKEN ADMIN_TOKEN BILIBILI_COOKIE
+}
+
+#################### 生成 docker-compose.yml ####################
+
+create_compose_file() {
+  mkdir -p "${COMPOSE_DIR}"
+
+  cat > "${COMPOSE_FILE}" <<EOF
+version: "3.8"
+
+services:
+  danmu-api:
+    image: ${IMAGE_NAME}
+    container_name: danmu-api
+    restart: unless-stopped
+
+    ports:
+      - "${PORT:-8080}:9321"
+
+    environment:
+      - TZ=Asia/Shanghai
+
+    volumes:
+      - "${DANMU_ENV_FILE}:/app/.env"
+EOF
+
+  success "docker-compose 配置已写入：${COMPOSE_FILE}"
+}
+
+#################### 启动服务 ####################
+
+start_service() {
+  info "拉取最新镜像：${IMAGE_NAME}"
+  docker pull "${IMAGE_NAME}" || true
+
+  info "使用 docker compose 启动 danmu-api..."
+  docker compose -f "${COMPOSE_FILE}" up -d
+
+  success "danmu-api 已启动。"
+}
+
+#################### 生成使用说明 ####################
+
+generate_readme() {
+  local README_FILE="/root/README_danmu-api_compose.txt"
+
+  # shellcheck disable=SC1090
+  source "${DANMU_ENV_FILE}" || true
+
+  local SERVER_IP
+  SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+  [ -z "${SERVER_IP}" ] && SERVER_IP="你的服务器IP"
+
+  cat > "${README_FILE}" <<EOF
+==================== danmu-api · Docker Compose 部署说明 ====================
+
+一、服务访问
+
+1. 普通访问地址（请替换成你自己的 IP / 域名）：
+
+   http://${SERVER_IP}:${PORT}/${TOKEN}
+
+2. 管理后台地址（包含日志查看、在线配置等，务必保密）：
+
+   http://${SERVER_IP}:${PORT}/${ADMIN_TOKEN}
+
+如通过 Cloudflare / 反向代理，可将上面的 IP 替换为你的域名，例如：
+
+   https://你的域名/${TOKEN}
+   https://你的域名/${ADMIN_TOKEN}
+
+
+二、常用 Docker Compose 命令（需在 ${COMPOSE_DIR} 目录执行）
+
+1. 启动 / 更新服务：
+
+   cd ${COMPOSE_DIR}
+   docker compose up -d
+
+2. 停止服务：
+
+   cd ${COMPOSE_DIR}
+   docker compose down
+
+3. 查看运行状态：
+
+   cd ${COMPOSE_DIR}
+   docker compose ps
+
+4. 查看日志：
+
+   docker logs -f danmu-api
+
+
+三、修改配置
+
+1. 编辑配置文件：
+
+   nano ${DANMU_ENV_FILE}
+
+2. 保存后重启服务使其生效：
+
+   cd ${COMPOSE_DIR}
+   docker compose down
+   docker compose up -d
+
+
+四、卸载（完全删除容器及配置）
+
+   bash $0 uninstall
+
+   此操作会删除：
+   - 容器 danmu-api
+   - 目录 ${COMPOSE_DIR}
+   - 目录 ${DANMU_ENV_DIR}
+
+=====================================================================
+EOF
+
+  success "使用说明已生成：${README_FILE}"
+}
+
+#################### 卸载与状态 ####################
+
+uninstall_all() {
+  require_root
+  info "开始卸载 danmu-api（容器 + 配置）..."
+
+  if [ -f "${COMPOSE_FILE}" ]; then
+    docker compose -f "${COMPOSE_FILE}" down --remove-orphans >/dev/null 2>&1 || true
+  fi
+
+  for name in danmu-api watchtower-danmu-api; do
+    if docker ps -a --format '{{.Names}}' | grep -wq "${name}"; then
+      docker stop "${name}" >/dev/null 2>&1 || true
+      docker rm "${name}" >/dev/null 2>&1 || true
+    fi
+  done
+
+  rm -rf "${COMPOSE_DIR}" "${DANMU_ENV_DIR}"
+
+  success "卸载完成，相关容器与配置文件已全部删除。"
+  exit 0
+}
+
+show_status() {
+  require_root
+  info "当前 Docker 容器列表（过滤 danmu）："
+  docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep -i 'danmu' || echo "暂无 danmu 相关容器。"
+
+  if [ -f "${COMPOSE_FILE}" ]; then
+    echo
+    info "docker compose ps："
+    (cd "${COMPOSE_DIR}" && docker compose ps || true)
+  fi
+
+  exit 0
+}
+
+#################### 主流程 ####################
+
+main() {
+  case "$1" in
+    uninstall)
+      uninstall_all
+      ;;
+    status)
+      show_status
+      ;;
+    *)
+      require_root
+      install_docker_and_compose
+      cleanup_old
+      create_or_update_env
+      create_compose_file
+      start_service
+      generate_readme
+
+      echo
+      success "全部完成！你可以查看 /root/README_danmu-api_compose.txt 获取详细使用说明。"
+      ;;
+  esac
+}
+
+main "$@"
