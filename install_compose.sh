@@ -27,19 +27,49 @@ else
   exit 1
 fi
 
-# 3. 询问对外端口
+# 3. 自动检测并清理旧安装
+OLD_APP_PATH="$(pwd)/${APP_DIR}"
+if [ -d "${APP_DIR}" ] || docker ps -a --format '{{.Names}}' | grep -q '^danmu-api$'; then
+  echo ""
+  echo "检测到可能存在旧的 danmu 安装，开始自动清理..."
+
+  # 3.1 尝试通过旧目录里的 compose down
+  if [ -d "${APP_DIR}" ] && [ -f "${APP_DIR}/docker-compose.yml" ]; then
+    echo " - 停止旧的 docker compose 服务..."
+    (cd "${APP_DIR}" && ${COMPOSE} down --remove-orphans >/dev/null 2>&1) || true
+  fi
+
+  # 3.2 尝试直接删除旧容器
+  echo " - 删除旧容器 danmu-api（如果存在）..."
+  docker rm -f danmu-api >/dev/null 2>&1 || true
+
+  # 3.3 删除旧的自动更新 crontab
+  echo " - 清理旧的 crontab 自动更新任务..."
+  (crontab -l 2>/dev/null | grep -v "${OLD_APP_PATH}/update_danmu.sh" || true) | crontab - 2>/dev/null || true
+
+  # 3.4 删除旧目录
+  if [ -d "${APP_DIR}" ]; then
+    echo " - 删除旧目录 ${OLD_APP_PATH} ..."
+    rm -rf "${APP_DIR}"
+  fi
+
+  echo "旧安装已清理完成，将继续安装最新版本。"
+  echo ""
+fi
+
+# 4. 询问对外端口
 echo ""
 read -r -p "请输入对外访问端口（默认 9321）: " INPUT_PORT
 HOST_PORT=${INPUT_PORT:-9321}
 echo "将使用端口：${HOST_PORT}"
 echo ""
 
-# 4. 创建目录
+# 5. 创建目录
 mkdir -p "${APP_DIR}/config" "${APP_DIR}/.cache"
 cd "${APP_DIR}"
 APP_PATH="$(pwd)"
 
-# 5. 生成/询问配置
+# 6. 生成/询问配置
 if [ ! -f config/.env ]; then
   echo "开始生成 config/.env 配置文件..."
 
@@ -134,7 +164,7 @@ else
   echo "检测到已有 config/.env，保留你原来的配置。"
 fi
 
-# 6. 生成 docker-compose.yml（如果还没有）
+# 7. 生成 docker-compose.yml（如果还没有）
 if [ ! -f docker-compose.yml ]; then
   cat > docker-compose.yml <<EOF
 services:
@@ -156,7 +186,7 @@ else
   echo "检测到已有 docker-compose.yml，保留你原来的文件。"
 fi
 
-# 7. 生成更新脚本
+# 8. 生成更新脚本
 cat > "${APP_PATH}/update_danmu.sh" <<'EOF'
 #!/usr/bin/env bash
 set -e
@@ -177,7 +207,7 @@ EOF
 
 chmod +x "${APP_PATH}/update_danmu.sh"
 
-# 7.1 是否启用每天 4 点自动更新
+# 8.1 是否启用每天 4 点自动更新
 echo ""
 read -r -p "是否启用每天凌晨 4 点自动更新镜像并重启容器？[Y/n]: " ENABLE_AUTO_UPDATE
 ENABLE_AUTO_UPDATE=${ENABLE_AUTO_UPDATE:-Y}
@@ -191,11 +221,11 @@ else
   echo "0 4 * * * /bin/bash ${APP_PATH}/update_danmu.sh >/dev/null 2>&1"
 fi
 
-# 8. 首次拉取镜像并启动（拉最新）
+# 9. 首次拉取镜像并启动（拉最新）
 ${COMPOSE} pull
 ${COMPOSE} up -d
 
-# 9. 读取 TOKEN / IP 信息
+# 10. 读取 TOKEN / IP 信息
 USER_TOKEN=$(grep '^TOKEN=' config/.env | head -n1 | cut -d= -f2-)
 ADMIN_TOKEN_REAL=$(grep '^ADMIN_TOKEN=' config/.env | head -n1 | cut -d= -f2-)
 
