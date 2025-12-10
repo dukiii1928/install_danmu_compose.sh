@@ -234,7 +234,9 @@ if [ -z "$SERVER_IP" ]; then
   SERVER_IP="你的服务器IP或域名"
 fi
 
-ADMIN_PATH="admini_${ADMIN_TOKEN_REAL}"
+ADMIN_PATH="${ADMIN_TOKEN_REAL}"
+
+echo "管理后台（UI）：   http://${SERVER_IP}:${HOST_PORT}/${ADMIN_PATH}"
 
 echo ""
 echo "=== 安装完成！==="
