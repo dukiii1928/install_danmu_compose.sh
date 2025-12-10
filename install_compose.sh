@@ -27,8 +27,10 @@ else
   exit 1
 fi
 
+ROOT_DIR="$(pwd)"
+OLD_APP_PATH="${ROOT_DIR}/${APP_DIR}"
+
 # 3. 自动检测并清理旧安装
-OLD_APP_PATH="$(pwd)/${APP_DIR}"
 if [ -d "${APP_DIR}" ] || docker ps -a --format '{{.Names}}' | grep -q '^danmu-api$'; then
   echo ""
   echo "检测到可能存在旧的 danmu 安装，开始自动清理..."
@@ -69,54 +71,56 @@ mkdir -p "${APP_DIR}/config" "${APP_DIR}/.cache"
 cd "${APP_DIR}"
 APP_PATH="$(pwd)"
 
-# 6. 生成/询问配置
-if [ ! -f config/.env ]; then
-  echo "开始生成 config/.env 配置文件..."
+# 6. 生成/询问配置（每次安装都重写 .env）
+echo "开始生成 config/.env 配置文件..."
 
-  # 默认随机 TOKEN
-  DEFAULT_TOKEN=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 8)
-  DEFAULT_ADMIN_TOKEN=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 12)
+# 默认随机 TOKEN
+DEFAULT_TOKEN=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 8)
+DEFAULT_ADMIN_TOKEN=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 12)
 
-  echo ""
-  read -r -p "请输入普通后台 TOKEN（留空自动使用随机值: ${DEFAULT_TOKEN}）: " INPUT_TOKEN
-  read -r -p "请输入管理后台 ADMIN_TOKEN（留空自动使用随机值: ${DEFAULT_ADMIN_TOKEN}）: " INPUT_ADMIN_TOKEN
-  echo ""
-  echo "提示：B 站 Cookie 可选，用来抓完整弹幕。"
-  echo "示例：SESSDATA=xxxx; buvid3=xxxx; ... （按你浏览器里复制的为准）"
-  read -r -p "请输入 B 站 Cookie（可选，留空则不配置）: " INPUT_BILIBILI_COOKIE
-  echo ""
+echo ""
+read -r -p "请输入普通后台 TOKEN（留空自动使用随机值: ${DEFAULT_TOKEN}）: " INPUT_TOKEN
+read -r -p "请输入管理后台 ADMIN_TOKEN（留空自动使用随机值: ${DEFAULT_ADMIN_TOKEN}）: " INPUT_ADMIN_TOKEN
+echo ""
+echo "提示：B 站 Cookie 可选，用来抓完整弹幕。"
+echo "示例：SESSDATA=xxxx; buvid3=xxxx; ... （按你浏览器里复制的为准）"
+read -r -p "请输入 B 站 Cookie（可选，留空则不配置）: " INPUT_BILIBILI_COOKIE
+echo ""
 
-  TOKEN=${INPUT_TOKEN:-$DEFAULT_TOKEN}
-  ADMIN_TOKEN=${INPUT_ADMIN_TOKEN:-$DEFAULT_ADMIN_TOKEN}
+TOKEN=${INPUT_TOKEN:-$DEFAULT_TOKEN}
+ADMIN_TOKEN=${INPUT_ADMIN_TOKEN:-$DEFAULT_ADMIN_TOKEN}
+BILIBILI_COOKIE_VALUE=${INPUT_BILIBILI_COOKIE}
 
-  cat > config/.env <<EOF
-# 普通后台的路径
+# 一次性重写 .env
+cat > config/.env <<EOF
+# API 访问令牌
 TOKEN=${TOKEN}
 
-# 管理后台的路径（权限更高，注意保密）
+# 系统管理访问令牌（权限更高，注意保密）
 ADMIN_TOKEN=${ADMIN_TOKEN}
 EOF
 
-  if [ -n "$INPUT_BILIBILI_COOKIE" ]; then
-    {
-      echo ""
-      echo "# b 站 Cookie，用于获取完整弹幕"
-      echo "BILIBILI_COOKIE=${INPUT_BILIBILI_COOKIE}"
-    } >> config/.env
-  else
-    {
-      echo ""
-      echo "# BILIBILI_COOKIE=在这里填入你的 b 站 Cookie（可选）"
-    } >> config/.env
-  fi
+# Cookie：填了才写，不填只写注释
+if [ -n "$BILIBILI_COOKIE_VALUE" ]; then
+  {
+    echo ""
+    echo "# b 站 Cookie，用于获取完整弹幕"
+    echo "BILIBILI_COOKIE=${BILIBILI_COOKIE_VALUE}"
+  } >> config/.env
+else
+  {
+    echo ""
+    echo "# BILIBILI_COOKIE=在这里填入你的 b 站 Cookie（可选）"
+  } >> config/.env
+fi
 
-  # 询问是否自动写入推荐默认变量
-  echo ""
-  read -r -p "是否自动写入推荐的默认环境变量（SOURCE_ORDER、VOD_SERVERS 等）？[Y/n]: " AUTO_DEFAULT
-  AUTO_DEFAULT=${AUTO_DEFAULT:-Y}
+# 询问是否自动写入推荐默认变量
+echo ""
+read -r -p "是否自动写入推荐的默认环境变量（SOURCE_ORDER、VOD_SERVERS 等）？[Y/n]: " AUTO_DEFAULT
+AUTO_DEFAULT=${AUTO_DEFAULT:-Y}
 
-  if [[ "$AUTO_DEFAULT" =~ ^[Yy]$ ]]; then
-    cat >> config/.env <<'EOF'
+if [[ "$AUTO_DEFAULT" =~ ^[Yy]$ ]]; then
+  cat >> config/.env <<'EOF'
 
 # ===== 以下为推荐默认配置，可在 Web 后台修改 =====
 
@@ -154,15 +158,12 @@ DEPLOY_PLATFROM_ACCOUNT=
 DEPLOY_PLATFROM_PROJECT=
 DEPLOY_PLATFROM_TOKEN=
 EOF
-    echo "已写入一批推荐的默认配置（可在后台界面查看/修改）。"
-  else
-    echo "已跳过自动写入默认环境变量，你可以稍后在 Web 后台手动添加。"
-  fi
-
-  echo "已生成 config/.env 配置文件。"
+  echo "已写入一批推荐的默认配置（可在后台界面查看/修改）。"
 else
-  echo "检测到已有 config/.env，保留你原来的配置。"
+  echo "已跳过自动写入默认环境变量，你可以稍后在 Web 后台手动添加。"
 fi
+
+echo "config/.env 已生成。"
 
 # 7. 生成 docker-compose.yml（如果还没有）
 if [ ! -f docker-compose.yml ]; then
@@ -214,7 +215,7 @@ ENABLE_AUTO_UPDATE=${ENABLE_AUTO_UPDATE:-Y}
 
 if [[ "$ENABLE_AUTO_UPDATE" =~ ^[Yy]$ ]]; then
   CRON_LINE="0 4 * * * /bin/bash ${APP_PATH}/update_danmu.sh >/dev/null 2>&1"
-  ( crontab -l 2>/dev/null | grep -v "${APP_PATH}/update_danmu.sh" || true; echo "${CRON_LINE}" ) | crontab -
+  (crontab -l 2>/dev/null | grep -v "${APP_PATH}/update_danmu.sh" || true; echo "${CRON_LINE}") | crontab -
   echo "已设置每天凌晨 4 点自动更新任务。"
 else
   echo "已跳过自动更新，如需启用可手动将以下行加入 crontab："
@@ -234,10 +235,6 @@ if [ -z "$SERVER_IP" ]; then
   SERVER_IP="你的服务器IP或域名"
 fi
 
-ADMIN_PATH="${ADMIN_TOKEN_REAL}"
-
-echo "管理后台（UI）：   http://${SERVER_IP}:${HOST_PORT}/${ADMIN_PATH}"
-
 echo ""
 echo "=== 安装完成！==="
 echo "容器名：danmu-api"
@@ -252,7 +249,7 @@ echo ""
 
 echo "【后台访问地址】"
 echo "普通后台（UI）：   http://${SERVER_IP}:${HOST_PORT}/${USER_TOKEN}"
-echo "管理后台（UI）：   http://${SERVER_IP}:${HOST_PORT}/${ADMIN_PATH}"
+echo "管理后台（UI）：   http://${SERVER_IP}:${HOST_PORT}/${ADMIN_TOKEN_REAL}"
 echo ""
 echo "如果 IP 检测不对，请把上面地址里的 IP 部分换成你服务器的真实 IP 或域名。"
 echo ""
