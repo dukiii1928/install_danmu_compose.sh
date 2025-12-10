@@ -214,10 +214,9 @@ else
   echo "   cd ${APP_PATH} && docker-compose down"
 fi
 echo ""
-echo "5）完全卸载（删除目录和数据）："
+echo "5）完全卸载（删除容器、目录和定时任务）："
+echo "   docker rm -f danmu-api 2>/dev/null"
+echo "   crontab -l 2>/dev/null | grep -v \"${APP_PATH}/update_danmu.sh\" | crontab - 2>/dev/null || true"
 echo "   cd ${APP_PATH}/.. && rm -rf ${APP_DIR}"
-echo ""
-echo "6）自动更新脚本位置："
-echo "   ${APP_PATH}/update_danmu.sh"
 echo ""
 echo "脚本到此结束，祝使用愉快～"
