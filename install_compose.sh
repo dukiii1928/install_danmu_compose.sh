@@ -82,14 +82,9 @@ echo ""
 read -r -p "请输入普通后台 TOKEN（留空自动使用随机值: ${DEFAULT_TOKEN}）: " INPUT_TOKEN
 read -r -p "请输入管理后台 ADMIN_TOKEN（留空自动使用随机值: ${DEFAULT_ADMIN_TOKEN}）: " INPUT_ADMIN_TOKEN
 echo ""
-echo "提示：B 站 Cookie 可选，用来抓完整弹幕。"
-echo "示例：SESSDATA=xxxx; buvid3=xxxx; ... （按你浏览器里复制的为准）"
-read -r -p "请输入 B 站 Cookie（可选，留空则不配置）: " INPUT_BILIBILI_COOKIE
-echo ""
 
 TOKEN=${INPUT_TOKEN:-$DEFAULT_TOKEN}
 ADMIN_TOKEN=${INPUT_ADMIN_TOKEN:-$DEFAULT_ADMIN_TOKEN}
-BILIBILI_COOKIE_VALUE=${INPUT_BILIBILI_COOKIE}
 
 # 一次性重写 .env
 cat > config/.env <<EOF
@@ -98,70 +93,10 @@ TOKEN=${TOKEN}
 
 # 系统管理访问令牌（权限更高，注意保密）
 ADMIN_TOKEN=${ADMIN_TOKEN}
+
+# 其他可选环境变量（推荐在 Web UI 里配置，例如 BILIBILI_COOKIE 等）
+# BILIBILI_COOKIE=在这里填入你的 b 站 Cookie（可选）
 EOF
-
-# Cookie：填了才写，不填只写注释
-if [ -n "$BILIBILI_COOKIE_VALUE" ]; then
-  {
-    echo ""
-    echo "# b 站 Cookie，用于获取完整弹幕"
-    echo "BILIBILI_COOKIE=${BILIBILI_COOKIE_VALUE}"
-  } >> config/.env
-else
-  {
-    echo ""
-    echo "# BILIBILI_COOKIE=在这里填入你的 b 站 Cookie（可选）"
-  } >> config/.env
-fi
-
-# 询问是否自动写入推荐默认变量
-echo ""
-read -r -p "是否自动写入推荐的默认环境变量（SOURCE_ORDER、VOD_SERVERS 等）？[Y/n]: " AUTO_DEFAULT
-AUTO_DEFAULT=${AUTO_DEFAULT:-Y}
-
-if [[ "$AUTO_DEFAULT" =~ ^[Yy]$ ]]; then
-  cat >> config/.env <<'EOF'
-
-# ===== 以下为推荐默认配置，可在 Web 后台修改 =====
-
-# 源配置
-SOURCE_ORDER=360,vod,renren,hanjutv
-OTHER_SERVER=https://api.danmu.icu
-VOD_SERVERS=金蟾@https://zy.jinchancajii.com,789@https://www.caiji.cyou,听风@https://gctf.tfdh.top
-VOD_RETURN_MODE=fastest
-VOD_REQUEST_TIMEOUT=10000
-YOUKU_CONCURRENCY=8
-
-# 弹幕配置
-BLOCKED_WORDS=
-GROUP_MINUTE=1
-DANMU_LIMIT=0
-DANMU_SIMPLIFIED=false
-DANMU_PUSH_URL=
-CONVERT_TOP_BOTTOM_TO_SCROLL=false
-CONVERT_COLOR=
-
-# 缓存配置
-UPSTASH_REDIS_REST_URL=
-UPSTASH_REDIS_REST_TOKEN=
-SEARCH_CACHE_MINUTES=1
-COMMENT_CACHE_MINUTES=1
-REMEMBER_LAST_SELECT=true
-MAX_LAST_SELECT_MAP=200
-
-# 系统配置
-PROXY_URL=
-TMDB_API_KEY=
-LOG_LEVEL=info
-CONVERT_COLOR_TO_WHITE=
-DEPLOY_PLATFROM_ACCOUNT=
-DEPLOY_PLATFROM_PROJECT=
-DEPLOY_PLATFROM_TOKEN=
-EOF
-  echo "已写入一批推荐的默认配置（可在后台界面查看/修改）。"
-else
-  echo "已跳过自动写入默认环境变量，你可以稍后在 Web 后台手动添加。"
-fi
 
 echo "config/.env 已生成。"
 
